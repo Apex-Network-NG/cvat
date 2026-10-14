@@ -1,0 +1,31 @@
+
+# docker-compose.dokploy.yml
+
+services:
+  traefik:
+    # Do not publish CVAT's own gateway to host ports.
+    # Dokploy's existing Traefik will handle HTTPS.
+    ports: !reset []
+
+    expose:
+      - "8080"
+
+    networks:
+      cvat:
+      dokploy-network:
+
+    labels:
+      - "traefik.enable=false"
+
+  cvat_server:
+    environment:
+      CVAT_BASE_URL: https://${CVAT_HOST}
+      CVAT_NUM_PROXIES: "2"
+
+  cvat_grafana:
+    environment:
+      GF_SERVER_ROOT_URL: https://${CVAT_HOST}/analytics
+
+networks:
+  dokploy-network:
+    external: true
