@@ -95,7 +95,7 @@ services:
       CLICKHOUSE_USER: user
       CLICKHOUSE_PASSWORD: ${CVAT_CLICKHOUSE_PASSWORD:?Set CVAT_CLICKHOUSE_PASSWORD}
       DJANGO_MODWSGI_EXTRA_ARGS: ''
-      ALLOWED_HOSTS: ${CVAT_HOST:?Set CVAT_HOST}
+      ALLOWED_HOSTS: "cvt.apexex.co,cvat-server,cvat_server,localhost,127.0.0.1" # change cvt.apexex.co to your domain
       ADAPTIVE_AUTO_ANNOTATION: 'false'
       NUMPROCS: 2
       CVAT_ANALYTICS: 1
