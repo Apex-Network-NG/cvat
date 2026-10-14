@@ -1,31 +1,373 @@
-
-# docker-compose.dokploy.yml
-
+name: cvat
 services:
-  traefik:
-    # Do not publish CVAT's own gateway to host ports.
-    # Dokploy's existing Traefik will handle HTTPS.
-    ports: !reset []
-
-    expose:
-      - "8080"
-
+  cvat_db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_DB: cvat
+      POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
+    volumes:
+    - cvat_db:/var/lib/postgresql/data
+    networks: &id001
+    - cvat
+  cvat_redis_inmem:
+    image: redis:8.10-alpine
+    restart: unless-stopped
+    command:
+    - redis-server
+    - --save
+    - '60'
+    - '100'
+    - --appendonly
+    - 'yes'
+    volumes:
+    - cvat_inmem_db:/data
+    networks: *id001
+  cvat_redis_ondisk:
+    image: apache/kvrocks:2.17.0
+    restart: unless-stopped
+    init: true
+    command:
+    - --compact-cron
+    - 0 3 * * *
+    volumes:
+    - cvat_cache_db:/var/lib/kvrocks
+    networks: *id001
+  cvat_clickhouse:
+    image: clickhouse/clickhouse-server:23.11-alpine
+    restart: unless-stopped
+    environment: &id004
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: cvat
+      CLICKHOUSE_USER: user
+      CLICKHOUSE_PASSWORD: ${CVAT_CLICKHOUSE_PASSWORD:?Set CVAT_CLICKHOUSE_PASSWORD}
+    volumes:
+    - cvat_events_db:/var/lib/clickhouse
     networks:
       cvat:
-      dokploy-network:
-
-    labels:
-      - "traefik.enable=false"
-
+        aliases:
+        - clickhouse
+  cvat_opa:
+    image: openpolicyagent/opa:1.12.2
+    restart: unless-stopped
+    command:
+    - run
+    - --server
+    - --addr=:8181
+    - --log-level=error
+    - --set=services.cvat.url=http://cvat-server:8080
+    - --set=bundles.cvat.service=cvat
+    - --set=bundles.cvat.resource=/api/auth/rules
+    - --set=bundles.cvat.polling.min_delay_seconds=5
+    - --set=bundles.cvat.polling.max_delay_seconds=15
+    networks:
+      cvat:
+        aliases:
+        - opa
   cvat_server:
+    image: cvat/server:${CVAT_VERSION:-dev}
+    restart: unless-stopped
+    depends_on:
+    - cvat_db
+    - cvat_redis_inmem
+    - cvat_redis_ondisk
+    - cvat_clickhouse
+    - cvat_opa
     environment:
+      CVAT_POSTGRES_HOST: cvat_db
+      CVAT_POSTGRES_USER: root
+      CVAT_POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
+      CVAT_REDIS_INMEM_HOST: cvat_redis_inmem
+      CVAT_REDIS_INMEM_PORT: 6379
+      CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
+      CVAT_REDIS_ONDISK_PORT: 6666
+      CVAT_LOG_IMPORT_ERRORS: 'true'
+      CVAT_ALLOW_STATIC_CACHE: ${CVAT_ALLOW_STATIC_CACHE:-no}
+      CVAT_NUM_PROXIES: ${CVAT_NUM_PROXIES:-2}
+      DJANGO_LOG_SERVER_HOST: vector
+      DJANGO_LOG_SERVER_PORT: 8282
+      no_proxy: clickhouse,grafana,vector,opa,${no_proxy:-}
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: cvat
+      CLICKHOUSE_USER: user
+      CLICKHOUSE_PASSWORD: ${CVAT_CLICKHOUSE_PASSWORD:?Set CVAT_CLICKHOUSE_PASSWORD}
+      DJANGO_MODWSGI_EXTRA_ARGS: ''
+      ALLOWED_HOSTS: ${CVAT_HOST:?Set CVAT_HOST}
+      ADAPTIVE_AUTO_ANNOTATION: 'false'
+      NUMPROCS: 2
+      CVAT_ANALYTICS: 1
       CVAT_BASE_URL: https://${CVAT_HOST}
-      CVAT_NUM_PROXIES: "2"
-
-  cvat_grafana:
+      ONE_RUNNING_JOB_IN_QUEUE_PER_USER: ''
+    command: init run server nginx
+    volumes: &id002
+    - cvat_data:/home/django/data
+    - cvat_keys:/home/django/keys
+    - cvat_logs:/home/django/logs
+    networks:
+      cvat:
+        aliases:
+        - cvat-server
+  cvat_worker_utils:
+    image: cvat/server:${CVAT_VERSION:-dev}
+    restart: unless-stopped
+    depends_on: &id003
+    - cvat_db
+    - cvat_redis_inmem
+    - cvat_redis_ondisk
+    - cvat_clickhouse
     environment:
+      CVAT_POSTGRES_HOST: cvat_db
+      CVAT_POSTGRES_USER: root
+      CVAT_POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
+      CVAT_REDIS_INMEM_HOST: cvat_redis_inmem
+      CVAT_REDIS_INMEM_PORT: 6379
+      CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
+      CVAT_REDIS_ONDISK_PORT: 6666
+      CVAT_LOG_IMPORT_ERRORS: 'true'
+      CVAT_ALLOW_STATIC_CACHE: ${CVAT_ALLOW_STATIC_CACHE:-no}
+      CVAT_NUM_PROXIES: ${CVAT_NUM_PROXIES:-2}
+      DJANGO_LOG_SERVER_HOST: vector
+      DJANGO_LOG_SERVER_PORT: 8282
+      no_proxy: clickhouse,grafana,vector,opa,${no_proxy:-}
+      NUMPROCS: 1
+      CVAT_REDIS_INMEM_PASSWORD: ''
+    command: run worker notifications cleaning
+    volumes: *id002
+    networks: *id001
+  cvat_worker_import:
+    image: cvat/server:${CVAT_VERSION:-dev}
+    restart: unless-stopped
+    depends_on: *id003
+    environment:
+      CVAT_POSTGRES_HOST: cvat_db
+      CVAT_POSTGRES_USER: root
+      CVAT_POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
+      CVAT_REDIS_INMEM_HOST: cvat_redis_inmem
+      CVAT_REDIS_INMEM_PORT: 6379
+      CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
+      CVAT_REDIS_ONDISK_PORT: 6666
+      CVAT_LOG_IMPORT_ERRORS: 'true'
+      CVAT_ALLOW_STATIC_CACHE: ${CVAT_ALLOW_STATIC_CACHE:-no}
+      CVAT_NUM_PROXIES: ${CVAT_NUM_PROXIES:-2}
+      DJANGO_LOG_SERVER_HOST: vector
+      DJANGO_LOG_SERVER_PORT: 8282
+      no_proxy: clickhouse,grafana,vector,opa,${no_proxy:-}
+      NUMPROCS: 2
+    command: run worker import --with-scheduler
+    volumes: *id002
+    networks: *id001
+  cvat_worker_export:
+    image: cvat/server:${CVAT_VERSION:-dev}
+    restart: unless-stopped
+    depends_on: *id003
+    environment:
+      CVAT_POSTGRES_HOST: cvat_db
+      CVAT_POSTGRES_USER: root
+      CVAT_POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
+      CVAT_REDIS_INMEM_HOST: cvat_redis_inmem
+      CVAT_REDIS_INMEM_PORT: 6379
+      CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
+      CVAT_REDIS_ONDISK_PORT: 6666
+      CVAT_LOG_IMPORT_ERRORS: 'true'
+      CVAT_ALLOW_STATIC_CACHE: ${CVAT_ALLOW_STATIC_CACHE:-no}
+      CVAT_NUM_PROXIES: ${CVAT_NUM_PROXIES:-2}
+      DJANGO_LOG_SERVER_HOST: vector
+      DJANGO_LOG_SERVER_PORT: 8282
+      no_proxy: clickhouse,grafana,vector,opa,${no_proxy:-}
+      NUMPROCS: 2
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: cvat
+      CLICKHOUSE_USER: user
+      CLICKHOUSE_PASSWORD: ${CVAT_CLICKHOUSE_PASSWORD:?Set CVAT_CLICKHOUSE_PASSWORD}
+    command: run worker export --with-scheduler
+    volumes: *id002
+    networks: *id001
+  cvat_worker_annotation:
+    image: cvat/server:${CVAT_VERSION:-dev}
+    restart: unless-stopped
+    depends_on: *id003
+    environment:
+      CVAT_POSTGRES_HOST: cvat_db
+      CVAT_POSTGRES_USER: root
+      CVAT_POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
+      CVAT_REDIS_INMEM_HOST: cvat_redis_inmem
+      CVAT_REDIS_INMEM_PORT: 6379
+      CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
+      CVAT_REDIS_ONDISK_PORT: 6666
+      CVAT_LOG_IMPORT_ERRORS: 'true'
+      CVAT_ALLOW_STATIC_CACHE: ${CVAT_ALLOW_STATIC_CACHE:-no}
+      CVAT_NUM_PROXIES: ${CVAT_NUM_PROXIES:-2}
+      DJANGO_LOG_SERVER_HOST: vector
+      DJANGO_LOG_SERVER_PORT: 8282
+      no_proxy: clickhouse,grafana,vector,opa,${no_proxy:-}
+      NUMPROCS: 1
+    command: run worker annotation
+    volumes: *id002
+    networks: *id001
+  cvat_worker_webhooks:
+    image: cvat/server:${CVAT_VERSION:-dev}
+    restart: unless-stopped
+    depends_on: *id003
+    environment:
+      CVAT_POSTGRES_HOST: cvat_db
+      CVAT_POSTGRES_USER: root
+      CVAT_POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
+      CVAT_REDIS_INMEM_HOST: cvat_redis_inmem
+      CVAT_REDIS_INMEM_PORT: 6379
+      CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
+      CVAT_REDIS_ONDISK_PORT: 6666
+      CVAT_LOG_IMPORT_ERRORS: 'true'
+      CVAT_ALLOW_STATIC_CACHE: ${CVAT_ALLOW_STATIC_CACHE:-no}
+      CVAT_NUM_PROXIES: ${CVAT_NUM_PROXIES:-2}
+      DJANGO_LOG_SERVER_HOST: vector
+      DJANGO_LOG_SERVER_PORT: 8282
+      no_proxy: clickhouse,grafana,vector,opa,${no_proxy:-}
+      NUMPROCS: 1
+    command: run worker webhooks --with-scheduler
+    volumes: *id002
+    networks: *id001
+  cvat_worker_quality_reports:
+    image: cvat/server:${CVAT_VERSION:-dev}
+    restart: unless-stopped
+    depends_on: *id003
+    environment:
+      CVAT_POSTGRES_HOST: cvat_db
+      CVAT_POSTGRES_USER: root
+      CVAT_POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
+      CVAT_REDIS_INMEM_HOST: cvat_redis_inmem
+      CVAT_REDIS_INMEM_PORT: 6379
+      CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
+      CVAT_REDIS_ONDISK_PORT: 6666
+      CVAT_LOG_IMPORT_ERRORS: 'true'
+      CVAT_ALLOW_STATIC_CACHE: ${CVAT_ALLOW_STATIC_CACHE:-no}
+      CVAT_NUM_PROXIES: ${CVAT_NUM_PROXIES:-2}
+      DJANGO_LOG_SERVER_HOST: vector
+      DJANGO_LOG_SERVER_PORT: 8282
+      no_proxy: clickhouse,grafana,vector,opa,${no_proxy:-}
+      NUMPROCS: 1
+    command: run worker quality_reports
+    volumes: *id002
+    networks: *id001
+  cvat_worker_chunks:
+    image: cvat/server:${CVAT_VERSION:-dev}
+    restart: unless-stopped
+    depends_on: *id003
+    environment:
+      CVAT_POSTGRES_HOST: cvat_db
+      CVAT_POSTGRES_USER: root
+      CVAT_POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
+      CVAT_REDIS_INMEM_HOST: cvat_redis_inmem
+      CVAT_REDIS_INMEM_PORT: 6379
+      CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
+      CVAT_REDIS_ONDISK_PORT: 6666
+      CVAT_LOG_IMPORT_ERRORS: 'true'
+      CVAT_ALLOW_STATIC_CACHE: ${CVAT_ALLOW_STATIC_CACHE:-no}
+      CVAT_NUM_PROXIES: ${CVAT_NUM_PROXIES:-2}
+      DJANGO_LOG_SERVER_HOST: vector
+      DJANGO_LOG_SERVER_PORT: 8282
+      no_proxy: clickhouse,grafana,vector,opa,${no_proxy:-}
+      NUMPROCS: 2
+    command: run worker chunks
+    volumes: *id002
+    networks: *id001
+  cvat_worker_consensus:
+    image: cvat/server:${CVAT_VERSION:-dev}
+    restart: unless-stopped
+    depends_on: *id003
+    environment:
+      CVAT_POSTGRES_HOST: cvat_db
+      CVAT_POSTGRES_USER: root
+      CVAT_POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
+      CVAT_REDIS_INMEM_HOST: cvat_redis_inmem
+      CVAT_REDIS_INMEM_PORT: 6379
+      CVAT_REDIS_ONDISK_HOST: cvat_redis_ondisk
+      CVAT_REDIS_ONDISK_PORT: 6666
+      CVAT_LOG_IMPORT_ERRORS: 'true'
+      CVAT_ALLOW_STATIC_CACHE: ${CVAT_ALLOW_STATIC_CACHE:-no}
+      CVAT_NUM_PROXIES: ${CVAT_NUM_PROXIES:-2}
+      DJANGO_LOG_SERVER_HOST: vector
+      DJANGO_LOG_SERVER_PORT: 8282
+      no_proxy: clickhouse,grafana,vector,opa,${no_proxy:-}
+      NUMPROCS: 1
+    command: run worker consensus
+    volumes: *id002
+    networks: *id001
+  cvat_ui:
+    image: cvat/ui:${CVAT_VERSION:-dev}
+    restart: unless-stopped
+    depends_on:
+    - cvat_server
+    networks: *id001
+  cvat_vector:
+    image: timberio/vector:0.26.0-alpine
+    restart: unless-stopped
+    user: 1000:1000
+    depends_on:
+    - cvat_clickhouse
+    environment: *id004
+    volumes:
+    - ./components/analytics/vector/vector.toml:/etc/vector/vector.toml:ro
+    tmpfs:
+    - /vector-data-dir
+    networks:
+      cvat:
+        aliases:
+        - vector
+  cvat_grafana:
+    image: grafana/grafana-oss:10.1.2
+    restart: unless-stopped
+    environment:
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: cvat
+      CLICKHOUSE_USER: user
+      CLICKHOUSE_PASSWORD: ${CVAT_CLICKHOUSE_PASSWORD:?Set CVAT_CLICKHOUSE_PASSWORD}
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
+      GF_AUTH_BASIC_ENABLED: 'false'
+      GF_AUTH_ANONYMOUS_ENABLED: 'true'
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: 'true'
       GF_SERVER_ROOT_URL: https://${CVAT_HOST}/analytics
-
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource 4.8.2
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/all_events.json
+    volumes:
+    - ./components/analytics/grafana/dashboards/:/var/lib/grafana/dashboards/:ro
+    entrypoint:
+    - sh
+    - -euc
+    - "mkdir -p /etc/grafana/provisioning/datasources /etc/grafana/provisioning/dashboards\ncat > /etc/grafana/provisioning/datasources/ds.yaml\
+      \ <<'EOF'\napiVersion: 1\ndatasources:\n  - name: ClickHouse\n    type: grafana-clickhouse-datasource\n  \
+      \  isDefault: true\n    jsonData:\n      defaultDatabase: $${CLICKHOUSE_DB}\n      port: $${CLICKHOUSE_PORT}\n\
+      \      server: $${CLICKHOUSE_HOST}\n      username: $${CLICKHOUSE_USER}\n      protocol: http\n    secureJsonData:\n\
+      \      password: $${CLICKHOUSE_PASSWORD}\nEOF\ncat > /etc/grafana/provisioning/dashboards/dashboard.yaml <<'EOF'\n\
+      apiVersion: 1\nproviders:\n  - name: cvat-logs\n    type: file\n    updateIntervalSeconds: 30\n    options:\n\
+      \      path: /var/lib/grafana/dashboards\n      foldersFromFilesStructure: true\nEOF\nexec /run.sh"
+    networks:
+      cvat:
+        aliases:
+        - grafana
+  cvat_gateway:
+    image: nginx:1.31-alpine
+    restart: unless-stopped
+    depends_on:
+    - cvat_ui
+    - cvat_server
+    volumes:
+    - ./deploy/dokploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    expose:
+    - '80'
+    networks: *id001
+volumes:
+  cvat_db: null
+  cvat_data: null
+  cvat_keys: null
+  cvat_logs: null
+  cvat_inmem_db: null
+  cvat_events_db: null
+  cvat_cache_db: null
 networks:
-  dokploy-network:
-    external: true
+  cvat: {}
