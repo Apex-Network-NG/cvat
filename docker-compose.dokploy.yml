@@ -372,12 +372,16 @@ services:
     labels: # Disable this with the dokploy-network: external true if you don't want any Traefik labels applied use - openssl passwd -apr1 to generate a hash for CVAT_AUTH_HASH
       - "traefik.enable=true"
 
-      # HTTP Basic Auth middleware
+      # Basic Authentication
       - "traefik.http.middlewares.cvat-private-auth.basicauth.users=${CVAT_AUTH_USERNAME}:${CVAT_AUTH_HASH}"
       - "traefik.http.middlewares.cvat-private-auth.basicauth.removeheader=true"
 
+      # Attach middleware to Dokploy's HTTPS router
+      - "traefik.http.routers.${CVAT_TRAEFIK_ROUTER:?Router name required}.middlewares=cvat-private-auth"
+
       # Network selection
       - "traefik.docker.network=dokploy-network"
+
     networks: *id001
 volumes:
   cvat_db: null
