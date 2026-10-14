@@ -363,12 +363,15 @@ services:
     image: nginx:1.31-alpine
     restart: unless-stopped
     depends_on:
-    - cvat_ui
-    - cvat_server
+      - cvat_ui
+      - cvat_server
     volumes:
-    - ./deploy/dokploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/dokploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     expose:
-    - '80'
+      - '80'
+    # labels:
+    #   - "traefik.http.middlewares.cvat-auth.basicauth.users=cvatadmin:$${CVAT_AUTH_HASH}"
+    #   - "traefik.http.middlewares.cvat-auth.basicauth.removeheader=true"
     networks: *id001
 volumes:
   cvat_db: null
