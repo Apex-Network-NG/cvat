@@ -76,6 +76,15 @@ services:
     - cvat_clickhouse
     - cvat_opa
     environment:
+      EMAIL_BACKEND: "django.core.mail.backends.smtp.EmailBackend"
+      EMAIL_HOST: ${SMTP_HOST}
+      EMAIL_PORT: ${SMTP_PORT:-587}
+      EMAIL_HOST_USER: ${SMTP_USERNAME}
+      EMAIL_HOST_PASSWORD: ${SMTP_PASSWORD}
+      EMAIL_USE_TLS: "true"
+      EMAIL_USE_SSL: "false"
+      DEFAULT_FROM_EMAIL: ${SMTP_FROM}
+      SERVER_EMAIL: ${SMTP_FROM}
       CVAT_POSTGRES_HOST: cvat_db
       CVAT_POSTGRES_USER: root
       CVAT_POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
