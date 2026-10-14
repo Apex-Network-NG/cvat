@@ -8,7 +8,7 @@ services:
       POSTGRES_DB: cvat
       POSTGRES_PASSWORD: ${CVAT_DB_PASSWORD:?Set CVAT_DB_PASSWORD}
     volumes:
-    - cvat_db:/var/lib/postgresql/data
+    - cvat_db:/var/lib/postgresql
     networks: &id001
     - cvat
   cvat_redis_inmem:
