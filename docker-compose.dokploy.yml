@@ -100,7 +100,7 @@ services:
       NUMPROCS: 2
       CVAT_ANALYTICS: 1
       CVAT_BASE_URL: https://${CVAT_HOST}
-      ONE_RUNNING_JOB_IN_QUEUE_PER_USER: ''
+      ONE_RUNNING_JOB_IN_QUEUE_PER_USER: false
     command: init run server nginx
     volumes: &id002
     - cvat_data:/home/django/data
