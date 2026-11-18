@@ -20,6 +20,7 @@ import {
     getCachedChunks,
     getJobFrameNumbers,
     getFramesMeta,
+    hasUnsavedFrameChanges,
     clear as clearFrames,
     findFrame,
     getContextImage,
@@ -114,8 +115,8 @@ export function implementJob(Job: typeof JobClass): typeof JobClass {
         value: async function deleteImplementation(
             this: JobClass,
         ): ReturnType<typeof JobClass.prototype.delete> {
-            if (this.type !== JobType.GROUND_TRUTH) {
-                throw new Error('Only ground truth job can be deleted');
+            if (this.type !== JobType.GROUND_TRUTH && this.type !== JobType.REPLICA) {
+                throw new Error('Only ground truth and replica jobs can be deleted');
             }
 
             return serverProxy.jobs.delete(this.id);
@@ -251,6 +252,14 @@ export function implementJob(Job: typeof JobClass): typeof JobClass {
             this: JobClass,
         ): ReturnType<typeof JobClass.prototype.frames.save> {
             return patchMeta(this.id).then((meta) => [meta]);
+        },
+    });
+
+    Object.defineProperty(Job.prototype.frames.hasUnsavedChanges, 'implementation', {
+        value: function hasUnsavedFrameChangesImplementation(
+            this: JobClass,
+        ): ReturnType<typeof JobClass.prototype.frames.hasUnsavedChanges> {
+            return hasUnsavedFrameChanges(this.id);
         },
     });
 
@@ -869,8 +878,8 @@ export function implementTask(Task: typeof TaskClass): typeof TaskClass {
                 taskSpec.source_storage = this.sourceStorage.toJSON();
             }
 
-            if (fields?.consensus_replicas) {
-                taskSpec.consensus_replicas = fields.consensus_replicas;
+            if (fields?.initial_replicas) {
+                taskSpec.initial_replicas = fields.initial_replicas;
             }
 
             const taskDataSpec = {
@@ -1098,6 +1107,14 @@ export function implementTask(Task: typeof TaskClass): typeof TaskClass {
             this: TaskClass,
         ): ReturnType<typeof TaskClass.prototype.frames.save> {
             return Promise.all(this.jobs.map((job) => patchMeta(job.id)));
+        },
+    });
+
+    Object.defineProperty(Task.prototype.frames.hasUnsavedChanges, 'implementation', {
+        value: function hasUnsavedFrameChangesImplementation(
+            this: TaskClass,
+        ): ReturnType<typeof TaskClass.prototype.frames.hasUnsavedChanges> {
+            return this.jobs.some((job) => job.frames.hasUnsavedChanges());
         },
     });
 
