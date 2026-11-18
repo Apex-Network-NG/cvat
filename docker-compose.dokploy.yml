@@ -376,9 +376,6 @@ services:
       - "traefik.http.middlewares.cvat-private-auth.basicauth.users=${CVAT_AUTH_USERNAME}:${CVAT_AUTH_HASH}"
       - "traefik.http.middlewares.cvat-private-auth.basicauth.removeheader=true"
 
-      # Attach middleware to Dokploy's HTTPS router
-      - "traefik.http.routers.${CVAT_TRAEFIK_ROUTER:?Router name required}.middlewares=cvat-private-auth"
-
       # Network selection
       - "traefik.docker.network=dokploy-network"
 
